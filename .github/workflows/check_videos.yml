@@ -1,0 +1,103 @@
+name: Check Videos
+
+on:
+  schedule:
+    # Run every 8 hours
+    - cron: '0 */8 * * *'
+  workflow_dispatch:
+    inputs:
+      max_channels:
+        description: 'Maximum channels to check'
+        required: false
+        default: '100'
+      priority:
+        description: 'Channel priority filter (high/medium/low)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - high
+          - medium
+          - low
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    concurrency:
+      group: check-videos
+      cancel-in-progress: false
+
+    steps:
+      - name: Clone private repository
+        env:
+          PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          git clone https://${PAT}@github.com/carlosrodera/YouTube-Outliers.git repo
+          cd repo
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: repo/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          cd repo
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify configuration
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          cd repo
+          python3 scripts/verify_config.py
+
+      - name: Run check_videos workflow
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LOG_LEVEL: INFO
+          YOUTUBE_QUOTA_PER_RUN: 2000
+        run: |
+          cd repo
+          ARGS=""
+          if [ -n "${{ github.event.inputs.max_channels }}" ]; then
+            ARGS="$ARGS --max-channels ${{ github.event.inputs.max_channels }}"
+          fi
+          if [ -n "${{ github.event.inputs.priority }}" ]; then
+            ARGS="$ARGS --priority ${{ github.event.inputs.priority }}"
+          fi
+          python -m src.workflows.check_videos $ARGS
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf repo
+
+      - name: Report failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "
+          from telegram import Bot
+          import asyncio
+          bot = Bot(token='${{ secrets.TELEGRAM_BOT_TOKEN }}')
+          asyncio.run(bot.send_message(
+              chat_id='${{ secrets.TELEGRAM_CHAT_ID }}',
+              text='❌ Check Videos workflow failed. Check GitHub Actions logs.'
+          ))
+          "

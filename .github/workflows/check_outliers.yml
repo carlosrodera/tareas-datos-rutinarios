@@ -1,0 +1,145 @@
+name: Check Outliers
+
+on:
+  schedule:
+    # Every 8 hours
+    - cron: '0 */8 * * *'
+  workflow_dispatch:
+    inputs:
+      channels_limit:
+        description: 'Number of channels to check'
+        required: false
+        default: '100'
+        type: string
+      send_notifications:
+        description: 'Send Telegram notifications'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+        - 'true'
+        - 'false'
+
+concurrency:
+  group: outlier-detection
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Clone private repository
+        env:
+          PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          git clone https://${PAT}@github.com/carlosrodera/YouTube-Outliers.git repo
+          cd repo
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: repo/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          cd repo
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create logs directory
+        run: |
+          cd repo
+          mkdir -p logs
+
+      - name: Verify configuration
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          cd repo
+          python3 scripts/verify_config.py
+
+      - name: Check for outliers
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CHANNELS_LIMIT: ${{ github.event.inputs.channels_limit || '100' }}
+          SEND_NOTIFICATIONS: ${{ github.event.inputs.send_notifications || 'true' }}
+          LOG_LEVEL: INFO
+        run: |
+          cd repo
+          echo "Starting outlier detection at $(date)"
+          echo "Checking $CHANNELS_LIMIT channels"
+          python scripts/check_videos.py
+          echo "Detection completed at $(date)"
+
+      - name: Upload detection summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detection-summary-${{ github.run_number }}
+          path: |
+            repo/detection_summary.json
+            repo/detection_error.txt
+            repo/logs/*.log
+          retention-days: 30
+
+      - name: Generate summary
+        if: always()
+        run: |
+          cd repo
+          if [ -f detection_summary.json ]; then
+            echo "## 📊 Detection Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            outliers=$(jq -r '.outliers_found' detection_summary.json)
+            quota=$(jq -r '.quota_used' detection_summary.json)
+            limit=$(jq -r '.quota_limit' detection_summary.json)
+
+            echo "- **Outliers Found:** $outliers" >> $GITHUB_STEP_SUMMARY
+            echo "- **API Quota Used:** $quota/$limit" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            if [ "$outliers" -gt 0 ]; then
+              echo "### Top Outliers:" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "| Channel | Video | Score | Level |" >> $GITHUB_STEP_SUMMARY
+              echo "|---------|-------|-------|-------|" >> $GITHUB_STEP_SUMMARY
+
+              jq -r '.outliers[] | "| \(.channel) | \(.title) | \(.score) | \(.level) |"' detection_summary.json | head -5 >> $GITHUB_STEP_SUMMARY
+            fi
+
+            quota_percent=$((quota * 100 / limit))
+            if [ "$quota_percent" -gt 80 ]; then
+              echo "::warning::High API quota usage: ${quota_percent}%"
+            fi
+
+            if [ -f detection_error.txt ]; then
+              echo "::error::$(cat detection_error.txt)"
+            fi
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf repo
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\": \"${TELEGRAM_CHAT_ID}\", \"text\": \"🚨 Outlier detection workflow failed!\\nRun: ${{ github.run_number }}\\nTime: $(date)\\nCheck GitHub Actions for details.\"}"

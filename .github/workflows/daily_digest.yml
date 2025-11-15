@@ -1,0 +1,67 @@
+name: Daily Digest
+
+on:
+  schedule:
+    # Run daily at 20:00 UTC (8 PM)
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Clone private repository
+        env:
+          PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          git clone https://${PAT}@github.com/carlosrodera/YouTube-Outliers.git repo
+          cd repo
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: repo/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          cd repo
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run daily_digest workflow
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LOG_LEVEL: INFO
+          DIGEST_MAX_OUTLIERS: 50
+        run: |
+          cd repo
+          python -m src.workflows.daily_digest
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf repo
+
+      - name: Report failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "
+          from telegram import Bot
+          import asyncio
+          bot = Bot(token='${{ secrets.TELEGRAM_BOT_TOKEN }}')
+          asyncio.run(bot.send_message(
+              chat_id='${{ secrets.TELEGRAM_CHAT_ID }}',
+              text='❌ Daily Digest workflow failed. Check GitHub Actions logs.'
+          ))
+          "
