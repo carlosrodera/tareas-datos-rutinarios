@@ -2,8 +2,8 @@ name: Check Videos
 
 on:
   schedule:
-    # Run every 8 hours
-    - cron: '0 */8 * * *'
+    # Run every 2 hours (12x faster detection - unlimited minutes!)
+    - cron: '0 */2 * * *'
   workflow_dispatch:
     inputs:
       max_channels:

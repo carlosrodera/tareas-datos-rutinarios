@@ -2,8 +2,8 @@ name: Check Outliers
 
 on:
   schedule:
-    # Every 8 hours
-    - cron: '0 */8 * * *'
+    # Every 2 hours (12x faster detection - unlimited minutes!)
+    - cron: '0 */2 * * *'
   workflow_dispatch:
     inputs:
       channels_limit:
