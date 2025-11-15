@@ -1,0 +1,78 @@
+# Weekly Channel Discovery
+# Ejecuta búsqueda de nuevos canales virales cada lunes a las 10:00 UTC
+
+name: Weekly Channel Discovery
+
+on:
+  schedule:
+    - cron: '0 10 * * 1'  # Lunes a las 10:00 UTC
+  workflow_dispatch:  # Permite ejecución manual
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Clone private repository
+        env:
+          PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          git clone https://${PAT}@github.com/carlosrodera/YouTube-Outliers.git repo
+          cd repo
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          cd repo
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run channel discovery (AI Tools)
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd repo
+          python tools/discover_channels.py --niche ai_tools --limit 5
+        continue-on-error: true
+
+      - name: Run channel discovery (Business)
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd repo
+          python tools/discover_channels.py --niche business --limit 3
+        continue-on-error: true
+
+      - name: Run channel discovery (Content Creation)
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          cd repo
+          python tools/discover_channels.py --niche content_creation --limit 3
+        continue-on-error: true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf repo
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discovery-logs-${{ github.run_number }}
+          path: |
+            *.log
+          retention-days: 7
+          if-no-files-found: ignore
